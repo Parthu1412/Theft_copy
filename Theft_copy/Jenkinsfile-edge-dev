@@ -1,0 +1,109 @@
+pipeline {
+    agent any
+
+    environment {
+        registry = '891377355925.dkr.ecr.us-east-2.amazonaws.com'
+        registryImage = 'moksa_ai-ecr-edge-theft-detection'
+        registryImageTag = "turkey-edge-v1"
+        GIT_CREDENTIALS_ID = 'git-jen-ssh-key'
+        ENV = 'edge'
+        ARTIFACT_PATH = "${WORKSPACE}/mender-artifacts"
+        ARTIFACT_NAME = 'theft-detection'
+        ARTIFACT_NAME_FULL = "${ARTIFACT_NAME}-${BUILD_NUMBER}" 
+    }
+
+    stages {
+        stage('Checkout Source') {
+            steps {
+                git branch: "Edge_turkey",
+                    credentialsId: GIT_CREDENTIALS_ID,
+                    url: 'git@github.com:moksa-ai/theft-inference.git'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                    docker build --platform linux/amd64 -t ${registry}/${registryImage}:${registryImageTag} .
+                """
+            }
+        }
+
+        stage('Push Docker Image to ECR') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-cred',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh """
+                        aws ecr get-login-password --region us-east-2 | \\
+                        docker login --username AWS --password-stdin ${registry}
+                        docker push ${registry}/${registryImage}:${registryImageTag}
+                    """
+                }
+            }
+        }
+
+
+        stage("Build Mender Artifact") {
+            steps {
+                sh """
+                    mkdir -p ${ARTIFACT_PATH}
+                    mender-artifact write module-image \\
+                        -T script \\
+                        -n "${ARTIFACT_NAME_FULL}" \\
+                        -t turkey-rtx5090 \\
+                        -o "${ARTIFACT_PATH}/${ARTIFACT_NAME_FULL}.mender" \\
+                        --script /var/lib/jenkins/workspace/mender-scripts/ArtifactInstall_Enter_01_theft_detection_turkey
+
+                    echo "Artifact built at ${ARTIFACT_PATH}/${ARTIFACT_NAME_FULL}.mender"
+                """
+            }
+        }
+
+        stage("Upload Artifact to Mender") {
+            steps {
+                withCredentials([string(credentialsId: 'moksa-mender-cred', variable: 'MENDER_TOKEN')]) {
+                    sh """
+                        ARTIFACT_FILE="${ARTIFACT_PATH}/${ARTIFACT_NAME_FULL}.mender"
+                        
+                        if [ ! -f "\$ARTIFACT_FILE" ]; then
+                            echo "Error: Artifact not found at \$ARTIFACT_FILE"
+                            exit 1
+                        fi
+
+                        echo "Uploading artifact: \$ARTIFACT_FILE"
+                        
+                        curl -X POST \\
+                            -H "Authorization: Bearer \$MENDER_TOKEN" \\
+                            -F artifact=@\$ARTIFACT_FILE \\
+                            https://hosted.mender.io/api/management/v1/deployments/artifacts
+                    """
+                }
+            }
+        }
+
+        
+
+        // stage("Deploy Artifact to All Devices") {
+        //     steps {
+        //         withCredentials([string(credentialsId: 'moksa-mender-cred', variable: 'MENDER_TOKEN')]) {
+        //             sh """
+        //                 # Log in to Mender using token
+        //                 mender-cli login \
+        //                     --server https://hosted.mender.io \
+        //                     --token $MENDER_TOKEN
+
+        //                 # Create deployment for all devices
+        //                 mender-cli deployments create \
+        //                     --artifact-name "${ARTIFACT_NAME_FULL}" \
+        //                     --name "Deploy ${ARTIFACT_NAME_FULL}" \
+        //                     --all
+        //             """
+        //         }
+        //     }
+        // }
+    }
+}

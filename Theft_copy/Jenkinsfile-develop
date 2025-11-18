@@ -1,0 +1,104 @@
+
+pipeline {
+    agent any
+    environment {
+        registry = '891377355925.dkr.ecr.us-east-2.amazonaws.com'
+        registryImage = 'moksa_ai-ecr-theft-inference'
+        registryImageTag = "latest-develop-${BUILD_NUMBER}"
+        SCANNER_HOME = tool 'sonar-scanner'
+        HELM_GIT_REPO_URL = 'git@github.com:moksa-ai/customer-helm-charts.git'
+        HELM_GIT_REPO_BRANCH = 'main'
+        GIT_CREDENTIALS_ID = 'git-jen-ssh-key'
+        ENV = 'develop'
+
+    }
+    stages {
+        stage('Checkout Source') {
+            steps {
+                git branch: "cloud-theft-ffmpeg",
+                    credentialsId: GIT_CREDENTIALS_ID,
+                    url: 'git@github.com:moksa-ai/theft-inference.git'
+            }
+        }
+
+        stage('Trivy Filesystem Scan') {
+            steps {
+                sh 'trivy fs --format table -o trivy-fs-report.html .'
+            }
+        }
+
+        stage('Building image') {
+            steps {
+                script {
+                    dockerImage = docker.build("${registry}/${registryImage}:${registryImageTag}")
+                }
+            }
+        }
+
+        // stage('Trivy Image Scan') {
+        //     steps {
+        //         sh "trivy image --format table \
+        //                   -o trivy-image-report.html ${registry}/${registryImage}:${registryImageTag}"
+        //     }
+        // }
+
+        stage('Pushing to ECR') {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: 'AmazonWebServicesCredentialsBinding',
+                        credentialsId: 'aws-cred',
+                        accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                        secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                    ]]) {
+                        sh "aws ecr get-login-password --region us-east-2 | \
+                            docker login --username AWS --password-stdin ${registry}"
+                        sh "docker push ${registry}/${registryImage}:${registryImageTag}"
+                    }
+                }
+            }
+        }
+
+        stage('Archive Trivy Reports') {
+            steps {
+                archiveArtifacts artifacts: 'trivy-image-report.html, trivy-fs-report.html', fingerprint: true
+            }
+        }
+
+        stage('Checkout customer-helm-charts repo') {
+            steps {
+                git branch: HELM_GIT_REPO_BRANCH,
+                    credentialsId: GIT_CREDENTIALS_ID,
+                    url: HELM_GIT_REPO_URL
+            }
+        }
+        stage('Commit and Push Changes to customer-helm-charts') {
+            steps {
+                retry(2) {
+                    script {
+                        sshagent([GIT_CREDENTIALS_ID]) {
+                            sh """
+                            pwd
+                            git clean -fd
+                            wget -qO yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+                            chmod a+x ./yq
+                            UPDATED_FILES="client/values.yaml theftdetect-multicam-template/values-${ENV}.yaml"
+                            ./yq eval '.image.theftdetect = (.image.theftdetect | split(":")[0] + ":" + strenv(registryImageTag))' -i client/values.yaml || true
+                            ./yq eval '.image.theftdetect = (.image.theftdetect | split(":")[0] + ":" + strenv(registryImageTag))' -i theftdetect-multicam-template/values-${ENV}.yaml
+                            for file in \$(find \${ENV} -type f -name 'values.yaml'); do
+                                ./yq eval '.image.theftdetect = (.image.theftdetect | split(":")[0] + ":" + strenv(registryImageTag))' -i \$file || true
+                                UPDATED_FILES="\$UPDATED_FILES \$file"
+                            done
+                            git config user.name ${GIT_USERNAME}
+                            git config user.email ${GIT_EMAIL}
+                            git add -f \$UPDATED_FILES
+                            git commit --allow-empty -m "Update docker image to ${registryImageTag} for theftdetect in ${ENV} env."
+                            git push origin ${HELM_GIT_REPO_BRANCH}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

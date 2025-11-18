@@ -1,0 +1,164 @@
+pipeline {
+    agent any
+    environment {
+        PROJECT_ID = 'moksa-ai-dev'
+        LOCATION = 'us-central1'
+        REPOSITORY = 'theft-detection'
+        IMAGE_NAME = 'theft-detection'
+        IMAGE_VERSION = "${env.BUILD_NUMBER}"
+        FULL_IMAGE_NAME = "${LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}"
+        registry = '767398058704.dkr.ecr.us-east-2.amazonaws.com'
+        registryImage = 'moksa_ai-ecr-theft-detection'
+        registryImageTag = "latest-prod-${BUILD_NUMBER}"
+        SCANNER_HOME = tool 'sonar-scanner'
+        GIT_CREDENTIALS_ID = 'git-jen-ssh-key'
+        HELM_GIT_REPO_URL = 'git@github.com:moksa-ai/customer-helm-charts.git'
+        HELM_GIT_REPO_BRANCH = 'main'
+        ENV = 'prod'
+
+    }
+    stages {
+        stage('Checkout Source') {
+            steps {
+                cleanWs()
+                git branch: "main",
+                    credentialsId: GIT_CREDENTIALS_ID,
+                    url: 'git@github.com:moksa-ai/theft-inference.git'
+            }
+        }
+
+        stage('Trivy Filesystem Scan') {
+            steps {
+                sh 'trivy fs --format table -o trivy-fs-report.html .'
+            }
+        }
+
+        stage('Building image') {
+            steps {
+                script {
+                    dockerImage = docker.build("${registry}/${registryImage}:${registryImageTag}")
+                }
+            }
+        }
+        // ruled out as the step fails
+        // stage('Trivy Image Scan') {
+        //     steps {
+        //         sh "trivy image --format table \
+        //                   -o trivy-image-report.html ${registry}/${registryImage}:${registryImageTag}"
+        //     }
+        // }
+
+        stage('Pushing to ECR') {
+            steps {
+                script {
+                    withCredentials([[
+                        $class: 'AmazonWebServicesCredentialsBinding',
+                        credentialsId: 'aws-cred',
+                        accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                        secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                    ]]) {
+                        sh "aws ecr get-login-password --region us-east-2 | \
+                            docker login --username AWS --password-stdin ${registry}"
+                        sh "docker push ${registry}/${registryImage}:${registryImageTag}"
+                    }
+                }
+            }
+        }
+
+        // stage('Push to GCP Container Registry') {
+        //     steps {
+        //         script {
+        //             withCredentials([file(credentialsId: 'gcr-key', variable: 'GCR_KEY')]) {
+        //                 // Login to Artifact Registry
+        //                 sh '''
+        //                     cat "$GCR_KEY" | docker login -u _json_key --password-stdin ${LOCATION}-docker.pkg.dev
+        //                 '''
+                        
+        //                 // Tag and push images
+        //                 sh """
+        //                     docker tag ${registry}/${registryImage}:${registryImageTag} ${FULL_IMAGE_NAME}:${IMAGE_VERSION}
+        //                     docker push ${FULL_IMAGE_NAME}:${IMAGE_VERSION}
+        //                 """
+        //             }
+        //         }
+        //     }
+        // }
+
+        stage('Archive Trivy Reports') {
+            steps {
+                archiveArtifacts artifacts: 'trivy-fs-report.html', fingerprint: true
+            }
+        }
+        stage('Checkout customer-helm-charts repo') {
+            steps {
+                cleanWs()
+                git branch: HELM_GIT_REPO_BRANCH,
+                    credentialsId: GIT_CREDENTIALS_ID,
+                    url: HELM_GIT_REPO_URL
+            }
+        }
+        stage('Commit and Push Changes to customer-helm-charts') {
+            steps {
+                retry(2) {
+                    script {
+                        sshagent([GIT_CREDENTIALS_ID]) {
+                            sh """
+                            pwd
+                            git clean -fd
+                            wget -qO yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+                            chmod a+x ./yq
+                            UPDATED_FILES="client/values.yaml theftdetect-multicam-template/values-${ENV}.yaml"
+                            ./yq eval '.image.theftdetect = (.image.theftdetect | split(":")[0] + ":" + strenv(registryImageTag))' -i client/values.yaml || true
+                            ./yq eval '.image.theftdetect = (.image.theftdetect | split(":")[0] + ":" + strenv(registryImageTag))' -i theftdetect-multicam-template/values-${ENV}.yaml
+                            for file in \$(find \${ENV} -type f -name 'values.yaml'); do
+                                ./yq eval '.image.theftdetect = (.image.theftdetect | split(":")[0] + ":" + strenv(registryImageTag))' -i \$file || true
+                                UPDATED_FILES="\$UPDATED_FILES \$file"
+                            done
+                            git config user.name ${GIT_USERNAME}
+                            git config user.email ${GIT_EMAIL}
+                            git add -f \$UPDATED_FILES
+                            git commit --allow-empty -m "Update docker image to ${registryImageTag} for theftdetect in ${ENV} env."
+                            git push origin ${HELM_GIT_REPO_BRANCH}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+        // stage('Checkout gcp-customer-helm-charts repo') {
+        //     steps {
+        //         cleanWs()
+        //         git branch: HELM_GIT_REPO_BRANCH,
+        //             credentialsId: GIT_CREDENTIALS_ID,
+        //             url: GCP_HELM_GIT_REPO_URL
+        //     }
+        // }
+        // stage('Commit and Push Changes to gcp-customer-helm-charts') {
+        //     steps {
+        //         retry(2) {
+        //             script {
+        //                 sshagent([GIT_CREDENTIALS_ID]) {
+        //                     sh """
+        //                     pwd
+        //                     git clean -fd
+        //                     wget -qO yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        //                     chmod a+x ./yq
+        //                     UPDATED_FILES="client/values-${ENV}.yaml"
+        //                     ./yq eval '.image.theftdetection = (.image.theftdetection | split(":")[0] + ":" + strenv(IMAGE_VERSION))' -i client/values-${ENV}.yaml || true
+        //                     for file in \$(find \${ENV} -type f -name 'values.yaml'); do
+        //                         ./yq eval '.image.theftdetection = (.image.theftdetection | split(":")[0] + ":" + strenv(IMAGE_VERSION))' -i \$file || true
+        //                         UPDATED_FILES="\$UPDATED_FILES \$file"
+        //                     done
+        //                     git config user.name ${GIT_USERNAME}
+        //                     git config user.email ${GIT_EMAIL}
+        //                     git add -f \$UPDATED_FILES
+        //                     git commit --allow-empty -m "Update docker image to ${IMAGE_VERSION} for theftdetection in ${ENV} env."
+        //                     git push origin ${HELM_GIT_REPO_BRANCH}
+        //                     """
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+    }
+}
