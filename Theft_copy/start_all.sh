@@ -10,12 +10,15 @@ fi
 NUM_YOLO_WORKERS=${NUM_YOLO_WORKERS:-1}
 ENABLE_HEATMAP=${ENABLE_HEATMAP:-false}
 ENABLE_PEOPLE_COUNTING=${ENABLE_PEOPLE_COUNTING:-false}
+# New optional flag to run camera feature uploader (people/heatmap snapshots + re-id video segments)
+ENABLE_FEATURE_UPLOADER=${ENABLE_FEATURE_UPLOADER:-false}
 
 echo "============================================"
 echo "Service Configuration:"
 echo "  NUM_YOLO_WORKERS: $NUM_YOLO_WORKERS"
 echo "  ENABLE_HEATMAP: $ENABLE_HEATMAP"
 echo "  ENABLE_PEOPLE_COUNTING: $ENABLE_PEOPLE_COUNTING"
+echo "  ENABLE_FEATURE_UPLOADER: $ENABLE_FEATURE_UPLOADER"
 echo "============================================"
 
 echo "Starting Theft Detection (warming up model)..."
@@ -44,6 +47,15 @@ else
     echo "People Counting Service: DISABLED"
 fi
 
+# Start Camera Feature Uploader if enabled
+if [ "$ENABLE_FEATURE_UPLOADER" = "true" ]; then
+    echo "Starting Camera Feature Uploader..."
+    python3 -m app.core.orchestrators.camera_feature_uploader 2>&1 &
+    sleep 2
+else
+    echo "Camera Feature Uploader: DISABLED"
+fi
+
 echo "Waiting 40 seconds for theft model to warm up..."
 sleep 40
 
@@ -59,6 +71,7 @@ echo "  - Theft: tail -f theft.log"
 [ "$ENABLE_HEATMAP" = "true" ] && echo "  - Heatmap: tail -f heatmap.log"
 [ "$ENABLE_PEOPLE_COUNTING" = "true" ] && echo "  - People Counting: tail -f people_count.log"
 echo "  - Camera: tail -f camera.log"
+[ "$ENABLE_FEATURE_UPLOADER" = "true" ] && echo "  - Feature Uploader: tail -f camera_feature_uploader.log"
 echo ""
 echo "Use 'pkill -f python3' to stop all processes."
 
