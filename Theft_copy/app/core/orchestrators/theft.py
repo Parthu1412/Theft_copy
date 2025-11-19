@@ -160,35 +160,35 @@ class TheftOrchestrator:
 
         logger.info(f"ALERT: Theft alert triggered for camera {camera_id}!")
 
-        # Send API alert
-        try:
-            # Convert timestamp to unix time for API
-            from datetime import datetime
-            if isinstance(timestamp, str):
-                # Parse ISO format timestamp
-                ts_obj = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                end_time = int(ts_obj.timestamp())
-            else:
-                # Already a unix timestamp
-                end_time = int(timestamp)
+        # # Send API alert
+        # try:
+        #     # Convert timestamp to unix time for API
+        #     from datetime import datetime
+        #     if isinstance(timestamp, str):
+        #         # Parse ISO format timestamp
+        #         ts_obj = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        #         end_time = int(ts_obj.timestamp())
+        #     else:
+        #         # Already a unix timestamp
+        #         end_time = int(timestamp)
             
          
-            start_time=end_time - 20
+        #     start_time=end_time - 20
             
-            # Submit theft alert to API
-            self.api_service.submit_theft_alert(
-                camera_id=camera_id,
-                theft_probability=theft_prob,
-                start_time=start_time,
-                end_time=end_time
-            )
-            logger.info(f"API alert submitted for camera {camera_id} (probability: {theft_prob:.4f})")
+        #     # Submit theft alert to API
+        #     self.api_service.submit_theft_alert(
+        #         camera_id=camera_id,
+        #         theft_probability=theft_prob,
+        #         start_time=start_time,
+        #         end_time=end_time
+        #     )
+        #     logger.info(f"API alert submitted for camera {camera_id} (probability: {theft_prob:.4f})")
             
-            # Clear the frame buffer after alert is sent
-            self.orig_frames_data[camera_id].clear()
+        #     # Clear the frame buffer after alert is sent
             
-        except Exception as e:
-            logger.error(f"Failed to submit API alert for camera {camera_id}: {e}")
+            
+        # except Exception as e:
+        #     logger.error(f"Failed to submit API alert for camera {camera_id}: {e}")
             #PARTHU
         try:
             # Collect original frames and metadata
@@ -218,9 +218,13 @@ class TheftOrchestrator:
                 logger.info(f"Queued video for camera {camera_id}: {frame_count} frames")
             except zmq.Again:
                 logger.warning(f"Video queue full, dropping video for camera {camera_id}")
+
+            
         except Exception as e:
             logger.error(f"Failed to queue video for camera {camera_id}: {e}")
             #PARTHU
+        #clear the frame buffer after attempting to send
+        self.orig_frames_data[camera_id].clear()
             
         
 

@@ -5,18 +5,38 @@ import tensorflow as tf
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 
+########
+import tensorflow as tf
+
+# --- PASTE THIS NEW BLOCK ---
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        # limit to 4096MB (4GB)
+        tf.config.set_logical_device_configuration(
+            gpus[0],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=4096)]
+        )
+        logical_gpus = tf.config.list_logical_devices('GPU')
+        print(f"✅ Tensorflow restricted to 4GB. Logical GPUs: {len(logical_gpus)}")
+    except RuntimeError as e:
+        print(f"⚠️ TF Config Error: {e}")
+# ----------------------------
+##########
+
 from app import config
 
 logger = logging.getLogger("TheftInference")
 
 # Configure GPU memory growth
 gpu_devices = tf.config.experimental.list_physical_devices("GPU")
-for gpu in gpu_devices:
-    tf.config.experimental.set_memory_growth(gpu, True)
-    tf.config.experimental.set_virtual_device_configuration(
-        gpu, [tf.config.experimental.VirtualDeviceConfiguration(config.GPU_LIMIT)]
-    )
-
+###############################################################
+# for gpu in gpu_devices:
+#     tf.config.experimental.set_memory_growth(gpu, True)
+#     tf.config.experimental.set_virtual_device_configuration(
+#         gpu, [tf.config.experimental.VirtualDeviceConfiguration(config.GPU_LIMIT)]
+#     )
+#####################################################################3
 # Enable XLA and fast matmul/conv on Ampere+ (TF32)
 tf.config.optimizer.set_jit(True)
 try:

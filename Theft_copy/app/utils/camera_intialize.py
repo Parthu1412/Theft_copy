@@ -5,7 +5,7 @@ import logging
 from app import config
 from antmedia_service.webrtc_subscriber import AntMediaCamera
 from app.config import CameraConfig
-
+from typing import Union
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +21,7 @@ class CameraInit:
 
         self.config = config
 
-    def camera_init(self) -> AntMediaCamera | cv2.VideoCapture:
+    def camera_init(self) -> Union[AntMediaCamera, cv2.VideoCapture]:
         """
         Initialize camera based on client type.
 

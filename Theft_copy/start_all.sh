@@ -44,8 +44,8 @@ else
     echo "People Counting Service: DISABLED"
 fi
 
-echo "Waiting 10 seconds for theft model to warm up..."
-sleep 10
+echo "Waiting 40 seconds for theft model to warm up..."
+sleep 40
 
 # Start Camera Orchestrator (handles both single and multi-YOLO)
 echo "Starting Camera Orchestrator with $NUM_YOLO_WORKERS YOLO worker(s)..."

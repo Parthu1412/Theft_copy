@@ -17,7 +17,7 @@ import concurrent.futures
 import datetime, subprocess
 import os, sys, signal, uuid
 from dataclasses import dataclass
-
+from typing import List
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -66,42 +66,35 @@ class VideoGenerationOrchestrator:
 
     def create_folder(self):
         try:
-            os.makedirs("theft_videos", exist_ok=True)
+            os.makedirs("theft_videos_TEMP1", exist_ok=True)
             logger.info("Video Generation Orchestrator: Created/verified theft_videos folder")
         except Exception as e:
             logger.error(f"Error creating video folder: {e}")
 
-    def write_video(self, frames: list[np.ndarray], output_path: str):
+    def write_video(self, frames: List[np.ndarray], output_path: str):
+        # Check if we actually received frames
         if not frames:
             logger.warning(f"No frames to write for {output_path}")
             return
 
         try:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            #FFmpeg command setup
             command = [
                 "ffmpeg",
                 "-y",
-                "-f",
-                "image2pipe",
-                "-vcodec",
-                "mjpeg",
-                "-r",
-                "15",
-                "-i",
-                "-",
+                "-f", "image2pipe",
+                "-vcodec", "mjpeg",
+                "-r", "15",
+                "-i", "-",
                 "-an",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-crf",
-                "35",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                "-tune",
-                "zerolatency",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "35",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-tune", "zerolatency",
                 output_path,
             ]
 
@@ -109,14 +102,28 @@ class VideoGenerationOrchestrator:
                 command, stdin=subprocess.PIPE, stderr=subprocess.PIPE
             )
 
-            for frame in frames:
+            count = 0
+            for i, frame in enumerate(frames):
                 if frame is None:
                     continue
-                # Convert numpy array to JPEG bytes
+                
+              
+                if isinstance(frame, list):
+                    frame = np.array(frame, dtype=np.uint8)
+
+                # Ensure it is now a valid array before encoding
                 if isinstance(frame, np.ndarray):
-                    ok, buffer = cv2.imencode(".jpg", frame)
-                    if ok:
-                        process.stdin.write(buffer.tobytes())
+                    try:
+                        ok, buffer = cv2.imencode(".jpg", frame)
+                        if ok:
+                            process.stdin.write(buffer.tobytes())
+                            count += 1
+                        else:
+                            logger.warning(f"Frame {i} failed to encode")
+                    except IOError:
+                        break
+                else:
+                    logger.warning(f"Frame {i} is invalid type: {type(frame)}")
 
             process.stdin.close()
             process.wait()
@@ -124,13 +131,15 @@ class VideoGenerationOrchestrator:
             if process.returncode != 0:
                 stderr_output = process.stderr.read().decode()
                 logger.error(f"FFmpeg error for {output_path}: {stderr_output}")
+            elif count == 0:
+                logger.error(f"FFmpeg ran but wrote 0 frames to {output_path}. Check input data.")
             else:
-                logger.info(f"Video written successfully: {output_path}")
+                logger.info(f"Video written successfully: {output_path} ({count} frames)")
 
         except Exception as e:
             logger.error(f"Error writing video {output_path}: {e}")
 
-    async def write_video_async(self, frames: list[np.ndarray], output_path: str):
+    async def write_video_async(self, frames: List[np.ndarray], output_path: str):
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(self.executor, self.write_video, frames, output_path)
@@ -165,7 +174,7 @@ class VideoGenerationOrchestrator:
                 detection_time[:-1] if isinstance(detection_time, str) and detection_time.endswith('Z') else detection_time
             )
             filename = f"{ts_name}_{camera_id}.mp4"
-            video_path = os.path.join("theft_videos", f"store_{store_id}", f"camera_{camera_id}", filename)
+            video_path = os.path.join("theft_videos_TEMP1", f"store_{store_id}", f"camera_{camera_id}", filename)
 
             logger.info(
                 f"Processing video for camera {camera_id}: {frame_count} frames -> {video_path}"
@@ -174,15 +183,13 @@ class VideoGenerationOrchestrator:
             # Process video in background thread
             await self.write_video_async(frames, video_path)
             
-            # Clean up frames data after processing
             del frames
 
             # Check if video file was created successfully
-            if not os.path.exists(video_path):
-                logger.error(f"Video file not created: {video_path}")
+            if not os.path.exists(video_path) or os.path.getsize(video_path) < 100:
+                logger.error(f"Video file validation failed (missing or empty): {video_path}")
                 return
             
-            # Video processing completed, now handle messaging
             trace_id = str(uuid.uuid4())
 
             # Upload to S3
@@ -195,7 +202,6 @@ class VideoGenerationOrchestrator:
                 self.total_videos_uploaded += 1
                 logger.info(f"Video uploaded to S3: {url}")
 
-                # Create message
                 message = TheftMessage(
                     camera_id=camera_id,
                     timestamp=ts_for_msg,
@@ -206,53 +212,52 @@ class VideoGenerationOrchestrator:
                     store_id=store_id,
                 )
 
-                 # Send to Kafka
+                # Send to Kafka
                 await kafka_producer.produce(message=message, topic=config.KAFKA_TOPIC)
                 logger.info(
                     f"Kafka Message sent for camera {camera_id} to topic {config.KAFKA_TOPIC}"
                 )
-                # Send to RabbitMQ
+                
+                # Send to RabbitMQ (Safe Retry Loop)
                 queue_name = f"theft_{store_id}"
-                try:
-                    self.rmq_client.publish_message(
-                        message=message.to_dict(),
-                        queue_name=queue_name,
-                    )
-                    logger.info(
-                        f"RabbitMQ Message sent for camera {camera_id} to queue {queue_name}"
-                    )
-                except Exception as e:
-                    logger.error(f"RabbitMQ publish failed for camera {camera_id}: {e}")
-                    while True:
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        if not hasattr(self, 'rmq_client'):
+                             self.rmq_client = RabitMQClient()
+
+                        self.rmq_client.publish_message(
+                            message=message.to_dict(),
+                            queue_name=queue_name,
+                        )
+                        logger.info(f"RabbitMQ Message sent for {camera_id} to queue {queue_name}")
+                        break
+                    except Exception as e:
+                        logger.error(f"RabbitMQ retry {attempt+1} failed: {e}")
+                        await asyncio.sleep(1)
                         try:
                             self.rmq_client = RabitMQClient()
-                            self.rmq_client.publish_message(
-                                message=message.to_dict(),
-                                queue_name=queue_name,
-                            )
-                            logger.info(
-                                f"RabbitMQ Message sent for camera {camera_id} to queue {queue_name}"
-                            )
-                            break
-                        except Exception as e:
-                            logger.error(f"RabbitMQ publish retry failed for camera {camera_id}: {e}")
-                            continue
+                        except:
+                            pass
+                else:
+                    logger.error(f"Failed to send RabbitMQ message for {camera_id} after retries")
+                
+                # Clean up local video file (From Code 2)
+                # try:
+                #     os.remove(video_path)
+                #     logger.info(f"Local video file removed: {video_path}")
+                # except Exception as e:
+                #     logger.warning(f"Could not remove local video file {video_path}: {e}")
+
             else:
                 logger.error(f"Failed to upload video for camera {camera_id}")
-            # Clean up local video file
-            try:
-                os.remove(video_path)
-                logger.info(f"Local video file removed: {video_path}")
-            except Exception as e:
-                logger.warning(f"Could not remove local video file {video_path}: {e}")
-            
+
             self.total_videos_processed += 1
             logger.info(f"Video processing completed for camera {camera_id}")
 
         except Exception as e:
             logger.error(f"Error in video processing for camera {video_data.get('camera_id', 'unknown')}: {e}")
         finally:
-            # Remove task from active tasks
             self.active_tasks.discard(asyncio.current_task().get_name())
 
     async def run(self):
@@ -279,11 +284,15 @@ class VideoGenerationOrchestrator:
                     video_data = self.receiver.recv_pyobj(zmq.NOBLOCK)
                     self.total_videos_received += 1
 
-                    logger.info(
-                        f"Received video data for camera {video_data.get('camera_id','?')}: "
-                        f"{video_data.get('frame_count', 0)} frames"
-                    )
-
+                    # Checking frames empty?
+                    frame_count = video_data.get('frame_count', 0)
+                    frames_list = video_data.get('frames', [])
+                    
+                    if not frames_list or frame_count == 0:
+                        logger.warning(f"Received EMPTY video payload for {video_data.get('camera_id')}")
+                    else:
+                        logger.info(f"Received video payload: {frame_count} frames. First frame type: {type(frames_list[0])}")
+                        
                     task = asyncio.create_task(self.process_video_with_cleanup(video_data, kafka_producer))
                     self.active_tasks.add(task.get_name())
                 except zmq.Again:
@@ -292,11 +301,7 @@ class VideoGenerationOrchestrator:
                 await asyncio.sleep(0.1)
 
                 if self.total_videos_received > 0 and self.total_videos_received % 50 == 0:
-                    logger.info(
-                        f"Video Generation Stats: Received={self.total_videos_received}, "
-                        f"Processed={self.total_videos_processed}, "
-                        f"Uploaded={self.total_videos_uploaded}"
-                    )
+                    logger.info(f"Video Generation Stats: Processed={self.total_videos_processed}")
         except KeyboardInterrupt:
             logger.info("Video Generation Orchestrator: Received interrupt signal")
         except Exception as e:
@@ -323,9 +328,7 @@ async def main():
 
 if __name__ == "__main__":
     def signal_handler(signum, frame):
-        logger.info(
-            f"Video Generation Orchestrator received signal {signum}, shutting down..."
-        )
+        logger.info(f"Video Generation Orchestrator received signal {signum}, shutting down...")
         exit(0)
 
     signal.signal(signal.SIGTERM, signal_handler)
