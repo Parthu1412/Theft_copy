@@ -50,7 +50,7 @@ fi
 # Start Camera Feature Uploader if enabled
 if [ "$ENABLE_FEATURE_UPLOADER" = "true" ]; then
     echo "Starting Camera Feature Uploader..."
-    python3 -m app.core.orchestrators.camera_feature_uploader 2>&1 &
+    python3 -m app.core.orchestrators.data_collection 2>&1 &
     sleep 2
 else
     echo "Camera Feature Uploader: DISABLED"
@@ -71,7 +71,7 @@ echo "  - Theft: tail -f theft.log"
 [ "$ENABLE_HEATMAP" = "true" ] && echo "  - Heatmap: tail -f heatmap.log"
 [ "$ENABLE_PEOPLE_COUNTING" = "true" ] && echo "  - People Counting: tail -f people_count.log"
 echo "  - Camera: tail -f camera.log"
-[ "$ENABLE_FEATURE_UPLOADER" = "true" ] && echo "  - Feature Uploader: tail -f camera_feature_uploader.log"
+[ "$ENABLE_FEATURE_UPLOADER" = "true" ] && echo "  - Feature Uploader: tail -f data_collection.log"
 echo ""
 echo "Use 'pkill -f python3' to stop all processes."
 

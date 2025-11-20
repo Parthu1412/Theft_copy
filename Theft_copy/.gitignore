@@ -168,7 +168,9 @@ cython_debug/
 
 # Extra Material
 theft_videos/
+theft_videos_frames/
 theft_dummy_videos/
+
 *.mp4
 
 .DS_Store
