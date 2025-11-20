@@ -170,6 +170,7 @@ cython_debug/
 theft_videos/
 theft_videos_frames/
 theft_dummy_videos/
+Data_Collection/
 
 *.mp4
 
