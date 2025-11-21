@@ -66,7 +66,7 @@ class VideoGenerationOrchestrator:
 
     def create_folder(self):
         try:
-            os.makedirs("theft_videos_TEMP3", exist_ok=True)
+            os.makedirs("theft_vidoes_temp4", exist_ok=True)
             logger.info("Video Generation Orchestrator: Created/verified theft_videos folder")
         except Exception as e:
             logger.error(f"Error creating video folder: {e}")
@@ -174,7 +174,7 @@ class VideoGenerationOrchestrator:
                 detection_time[:-1] if isinstance(detection_time, str) and detection_time.endswith('Z') else detection_time
             )
             filename = f"{ts_name}_{camera_id}.mp4"
-            video_path = os.path.join("theft_videos_TEMP3", f"store_{store_id}", f"camera_{camera_id}", filename)
+            video_path = os.path.join("theft_vidoes_temp4", f"store_{store_id}", f"camera_{camera_id}", filename)
 
             logger.info(
                 f"Processing video for camera {camera_id}: {frame_count} frames -> {video_path}"
